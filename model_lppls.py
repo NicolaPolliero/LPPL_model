@@ -106,7 +106,7 @@ class ModelLPPLS:
             and 2 <= omega <= 15           # qualified range
         )
     
-    def fit(self, initial_guess, method: str = "Nelder-Mead", options=None):
+   def fit(self, initial_guess, method: str = "Nelder-Mead", options=None):
         """
         Fit the LPPLS model by minimizing the sum of squared errors.
 
@@ -146,7 +146,7 @@ class ModelLPPLS:
 
         return self
 
-    def fit_multistart(self, n_runs: int = 10):
+     def fit_multistart(self, n_runs: int = 10):
         """
         Robust multistart fitting: run several fits with randomized initial guesses
         and keep the best run (lowest RMSE) among those that pass the qualified-fit check.
