@@ -50,7 +50,7 @@ class ModelLPPLS:
     def _design_matrix(self, tc: float, m: float, omega: float) -> np.ndarray:
         """Design matrix for linear regression part (internal)."""
         dt = np.maximum(tc - self.t, 1e-9)
-        f = dt**m
+        f = dt ** m
         g = f * np.cos(omega * np.log(dt))
         h = f * np.sin(omega * np.log(dt))
         return np.column_stack([np.ones_like(self.t), f, g, h])
@@ -80,22 +80,20 @@ class ModelLPPLS:
 
     # ---------- Public Methods ---------- #
     def lppls(self, t, A, B, C1, C2, tc, m, omega):
-        """
-        Compute the expected log-price for given parameters.
-        """
+        """Compute the expected log-price for given parameters."""
         dt = np.maximum(tc - t, 1e-9)
-        f = dt**m
+        f = dt ** m
         return A + B * f + C1 * f * np.cos(omega * np.log(dt)) + C2 * f * np.sin(
             omega * np.log(dt)
         )
 
     def _check_qualified_fit(self, tc: float, m: float, omega: float) -> bool:
         """
-        Filimonov–Sornette (2013) qualified fit constraints.
+        Qualified fit constraints (Filimonov–Sornette 2013).
 
-        tc must lie within (-60, 252) days relative to the last observation.
-        m must lie in (0, 1)
-        omega must lie in [2, 15]
+        tc must lie within (-60, 252) days relative to last observation.
+        m in (0, 1)
+        omega in [2, 15]
         """
         tc_lower = -60 / 365.25
         tc_upper = 252 / 365.25
@@ -110,25 +108,6 @@ class ModelLPPLS:
     def fit(self, initial_guess, method: str = "Nelder-Mead", options=None):
         """
         Fit the LPPLS model by minimizing the sum of squared errors.
-
-        Parameters
-        ----------
-        initial_guess : list or array-like
-            Initial guess for [tc, m, omega].
-        method : str, optional
-            Optimization method for scipy.optimize.minimize.
-        options : dict, optional
-            Additional options for the optimizer.
-
-        Returns
-        -------
-        self : ModelLPPLS
-            The fitted model (allows method chaining).
-
-        Raises
-        ------
-        ValueError
-            If optimization fails or model fitting is unsuccessful.
         """
         result = minimize(self._sse, initial_guess, method=method, options=options)
         self.result = result
@@ -138,29 +117,31 @@ class ModelLPPLS:
 
         tc, m, omega = result.x
         A, B, C1, C2 = self._solve_linear_params(tc, m, omega)
-        self.params = dict(tc=float(tc), m=float(m), omega=float(omega),
-                           A=float(A), B=float(B), C1=float(C1), C2=float(C2))
+        self.params = {
+            "tc": float(tc),
+            "m": float(m),
+            "omega": float(omega),
+            "A": float(A),
+            "B": float(B),
+            "C1": float(C1),
+            "C2": float(C2),
+        }
 
-        if self._check_qualified_fit(tc, m, omega):
-            self.fitted = True
-        else:
-            self.fitted = False
-
+        # Qualified fit?
+        self.fitted = self._check_qualified_fit(tc, m, omega)
         return self
 
     def fit_multistart(self, n_runs: int = 10, tol: float = 0.01):
         """
-        Robust multistart fitting: run several fits with randomized initial guesses
-        and keep the best run (lowest RMSE) among those that pass the qualified-fit check.
+        Robust multistart fitting:
+        - Runs `fit()` many times with random initial guesses.
+        - Keeps only candidates passing the qualified-fit check.
+        - Early stops if RMSE < tol (default 0.01).
 
-        - n_runs : number of random starting points (default 10)
-        - tol : RMSE threshold for early stopping (default 0.01)
-        - Random draws:
-            m ~ Uniform(0,1)
-            omega ~ Uniform(1,50)
-            tc0 = t_last + Uniform(0.01, 0.5)
-        - Calls self.fit(initial_guess) (no method/options passed)
-        - Allows negative B
+        Randomization:
+        - m ~ U(0,1)
+        - omega ~ U(1,50)
+        - tc0 = t_last + U(0.01, 0.5)
         """
         best = None
         best_rmse = np.inf
@@ -181,59 +162,43 @@ class ModelLPPLS:
 
             pars = candidate.params
             y_pred = candidate.lppls(
-                self.t, pars["A"], pars["B"], pars["C1"], pars["C2"],
+                self.t,
+                pars["A"], pars["B"], pars["C1"], pars["C2"],
                 pars["tc"], pars["m"], pars["omega"]
             )
             rmse = np.sqrt(np.mean((self.logp - y_pred) ** 2))
 
-            if rmse < tol:
-                self.params = candidate.params
-                self.result = candidate.result
-                self.fitted = True
-                return self
-
-            ss_res = np.sum((self.logp - y_pred) ** 2)
-            ss_tot = np.sum((self.logp - np.mean(self.logp)) ** 2)
-            r2 = 1 - ss_res / ss_tot if ss_tot != 0 else np.nan
-
             if np.isfinite(rmse) and rmse < best_rmse:
                 best_rmse = rmse
-                best = {
-                    "model": candidate,
-                    "rmse": float(rmse),
-                    "r2": float(r2),
-                }
+                best = candidate
+
+            # ---- EARLY STOP ----
+            if rmse < tol:
+                best_rmse = rmse
+                best = candidate
+                break
 
         if best is None:
             self.fitted = False
-            raise RuntimeError("fit_multistart: no qualified fit found in any random start.")
+            raise RuntimeError("fit_multistart: no qualified fit found.")
 
-        chosen = best["model"]
-        self.params = chosen.params
-        self.result = chosen.result
+        self.params = best.params
+        self.result = best.result
         self.fitted = True
         return self
 
     def summary(self, calibration_date=None):
-        """
-        Return fitted parameters and key derived metrics as a one-row DataFrame.
-
-        Parameters
-        ----------
-        calibration_date : float or datetime-like, optional
-
-        Returns
-        -------
-        pd.DataFrame
-        """
+        """Return fitted parameters as a one-row DataFrame."""
         if not self.fitted:
-            raise RuntimeError("Fit the model first using .fit(initial_guess).")
+            raise RuntimeError("Fit the model first.")
 
-        A, B, C1, C2, tc, m, omega = (
-            self.params["A"], self.params["B"], self.params["C1"],
-            self.params["C2"], self.params["tc"], self.params["m"],
-            self.params["omega"]
-        )
+        A = self.params["A"]
+        B = self.params["B"]
+        C1 = self.params["C1"]
+        C2 = self.params["C2"]
+        tc = self.params["tc"]
+        m = self.params["m"]
+        omega = self.params["omega"]
 
         kappa = -B
         sign = 1 if kappa > 0 else -1
@@ -252,4 +217,3 @@ class ModelLPPLS:
         }
 
         return pd.DataFrame([row])
-
