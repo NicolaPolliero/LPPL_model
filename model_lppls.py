@@ -88,6 +88,7 @@ class ModelLPPLS:
         return A + B * f + C1 * f * np.cos(omega * np.log(dt)) + C2 * f * np.sin(
             omega * np.log(dt)
         )
+
     def _check_qualified_fit(self, tc: float, m: float, omega: float) -> bool:
         """
         Filimonov–Sornette (2013) qualified fit constraints.
@@ -96,17 +97,17 @@ class ModelLPPLS:
         m must lie in (0, 1)
         omega must lie in [2, 15]
         """
-        tc_lower = - 60 / 365.25
+        tc_lower = -60 / 365.25
         tc_upper = 252 / 365.25
         tc_rel = tc - self.t[-1]
 
         return (
-            tc_lower < tc_rel < tc_upper   # tc in allowed range
-            and 0 < m < 1                  # stricter than optimization bounds
-            and 2 <= omega <= 15           # qualified range
+            tc_lower < tc_rel < tc_upper
+            and 0 < m < 1
+            and 2 <= omega <= 15
         )
-    
-   def fit(self, initial_guess, method: str = "Nelder-Mead", options=None):
+
+    def fit(self, initial_guess, method: str = "Nelder-Mead", options=None):
         """
         Fit the LPPLS model by minimizing the sum of squared errors.
 
@@ -137,8 +138,9 @@ class ModelLPPLS:
 
         tc, m, omega = result.x
         A, B, C1, C2 = self._solve_linear_params(tc, m, omega)
-        self.params = dict(tc=float(tc), m=float(m), omega=float(omega), A=float(A), B=float(B), C1=float(C1), C2=float(C2))
-        # Check qualified-fit constraints
+        self.params = dict(tc=float(tc), m=float(m), omega=float(omega),
+                           A=float(A), B=float(B), C1=float(C1), C2=float(C2))
+
         if self._check_qualified_fit(tc, m, omega):
             self.fitted = True
         else:
@@ -146,51 +148,54 @@ class ModelLPPLS:
 
         return self
 
-    def fit_multistart(self, n_runs: int = 10):
+    def fit_multistart(self, n_runs: int = 10, tol: float = 0.01):
         """
         Robust multistart fitting: run several fits with randomized initial guesses
         and keep the best run (lowest RMSE) among those that pass the qualified-fit check.
 
         - n_runs : number of random starting points (default 10)
+        - tol : RMSE threshold for early stopping (default 0.01)
         - Random draws:
             m ~ Uniform(0,1)
             omega ~ Uniform(1,50)
             tc0 = t_last + Uniform(0.01, 0.5)
         - Calls self.fit(initial_guess) (no method/options passed)
-        - Allows negative B (do not force sign of B)
+        - Allows negative B
         """
         best = None
         best_rmse = np.inf
 
         for _ in range(int(n_runs)):
-            # Randomized initial guess
             tc0 = self.t[-1] + float(np.random.uniform(0.01, 0.5))
             m0 = float(np.random.uniform(0.0, 1.0))
             omega0 = float(np.random.uniform(1.0, 50.0))
 
             try:
-                candidate = ModelLPPLS(self.t, self.p)  # fresh instance
-                candidate.fit([tc0, m0, omega0])        # DO NOT pass method/options here
+                candidate = ModelLPPLS(self.t, self.p)
+                candidate.fit([tc0, m0, omega0])
             except Exception:
-                # any error -> skip this run
                 continue
 
-            # Keep only candidates that passed qualified-fit constraints
             if not candidate.fitted:
                 continue
 
-            # compute candidate RMSE on the fitting window
             pars = candidate.params
-            y_pred = candidate.lppls(self.t, pars["A"], pars["B"], pars["C1"], pars["C2"],
-                                     pars["tc"], pars["m"], pars["omega"])
+            y_pred = candidate.lppls(
+                self.t, pars["A"], pars["B"], pars["C1"], pars["C2"],
+                pars["tc"], pars["m"], pars["omega"]
+            )
             rmse = np.sqrt(np.mean((self.logp - y_pred) ** 2))
 
-            # compute R^2 as an additional (optional) diagnostic
+            if rmse < tol:
+                self.params = candidate.params
+                self.result = candidate.result
+                self.fitted = True
+                return self
+
             ss_res = np.sum((self.logp - y_pred) ** 2)
             ss_tot = np.sum((self.logp - np.mean(self.logp)) ** 2)
             r2 = 1 - ss_res / ss_tot if ss_tot != 0 else np.nan
 
-            # Candidate is eligible if it passed qualified-fit; selection is by RMSE
             if np.isfinite(rmse) and rmse < best_rmse:
                 best_rmse = rmse
                 best = {
@@ -200,11 +205,9 @@ class ModelLPPLS:
                 }
 
         if best is None:
-            # No successful qualified-fit run found
             self.fitted = False
             raise RuntimeError("fit_multistart: no qualified fit found in any random start.")
 
-        # adopt the best candidate's results into self
         chosen = best["model"]
         self.params = chosen.params
         self.result = chosen.result
@@ -218,29 +221,23 @@ class ModelLPPLS:
         Parameters
         ----------
         calibration_date : float or datetime-like, optional
-            If provided, it will appear in the 'calibration_date' column
-            (useful when summarizing multiple fits).
 
         Returns
         -------
         pd.DataFrame
-            One-row DataFrame containing:
-            calibration_date, tc, A, B, C1, C2, m, omega, r2, rmse, kappa, sign
         """
         if not self.fitted:
             raise RuntimeError("Fit the model first using .fit(initial_guess).")
 
-        # --- Extract fitted parameters ---
         A, B, C1, C2, tc, m, omega = (
-            self.params["A"], self.params["B"], self.params["C1"], self.params["C2"],
-            self.params["tc"], self.params["m"], self.params["omega"]
+            self.params["A"], self.params["B"], self.params["C1"],
+            self.params["C2"], self.params["tc"], self.params["m"],
+            self.params["omega"]
         )
 
-        # --- Derived parameters ---
         kappa = -B
         sign = 1 if kappa > 0 else -1
 
-        # --- Build DataFrame row ---
         row = {
             "calibration_date": self.calibration_date,
             "tc": tc,
@@ -255,3 +252,4 @@ class ModelLPPLS:
         }
 
         return pd.DataFrame([row])
+
